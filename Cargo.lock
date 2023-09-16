@@ -1820,6 +1820,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "idb"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0dc17fcfa27c05cf62bf2f2f649d6229e08f6f12717f74ef85102a895a95a02"
+dependencies = [
+ "idb-sys",
+ "js-sys",
+ "num-traits",
+ "thiserror",
+ "tokio",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "idb-sys"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "afc0cc5fe5831ee0a6952d35e9f6650582a76976d5219f737d8d1d718c2e0b5a"
+dependencies = [
+ "js-sys",
+ "num-traits",
+ "thiserror",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "idna"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2895,6 +2923,7 @@ dependencies = [
  "heapless",
  "hmac",
  "home",
+ "idb",
  "itertools 0.10.5",
  "js-sys",
  "kaspa-addresses",

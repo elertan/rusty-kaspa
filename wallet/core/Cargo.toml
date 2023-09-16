@@ -72,6 +72,7 @@ pad.workspace = true
 async-std.workspace = true
 xxhash-rust.workspace = true
 regex.workspace = true
+idb.workspace = true
 
 [dependencies.web-sys]
 workspace = true

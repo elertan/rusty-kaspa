@@ -23,8 +23,8 @@ impl TransactionStore {
         self.inner.lock().unwrap()
     }
 
-    pub fn make_db_name(&self, binding: &str, network_id: &str) -> String {
-        format!("{}_{}_{}", self.name, binding, network_id)
+    pub fn make_db_name(&self, binding: &Binding, network_id: &NetworkId) -> String {
+        format!("{}_{}_{}", self.name, binding.to_hex(), network_id)
     }
 
     pub fn database_is_registered(&self, binding: &str, network_id: &str) -> bool {
@@ -63,6 +63,63 @@ impl TransactionStore {
     pub async fn store_transaction_metadata(&self, _id: TransactionId, _metadata: TransactionMetadata) -> Result<()> {
         Ok(())
     }
+
+    async fn init_or_get_db(&self, binding: &Binding, network_id: &NetworkId) -> Result<idb::Database> {
+        // Get a factory instance from global scope
+        let factory = idb::Factory::new().map_err(|err| format!("Error creating indexed db factory: {}", err))?;
+
+        let db_name = self.make_db_name(binding, network_id);
+
+        // Create an open request for the database
+        let mut open_request = factory.open(&db_name, Some(1)).unwrap();
+
+        // Add an upgrade handler for database
+        open_request.on_upgrade_needed(|event| {
+            // Get database instance from event
+            let database = event.database().unwrap();
+
+            // Prepare object store params
+            let mut store_params = idb::ObjectStoreParams::new();
+            store_params.key_path(Some(idb::KeyPath::new_single("id")));
+
+            // Create object store
+            let store = database.create_object_store("transactions", store_params).unwrap();
+
+            // version: u16,
+            // id: TransactionId,
+            // #[serde(skip_serializing_if = "Option::is_none")]
+            // unixtime: Option<u64>,
+            // binding: Binding,
+            // #[serde(rename = "blockDaaScore")]
+            // block_daa_score: u64,
+            // #[serde(rename = "network")]
+            // network_id: NetworkId,
+            // #[serde(rename = "data")]
+            // transaction_data: TransactionData,
+            // #[serde(skip_serializing_if = "Option::is_none")]
+            // metadata: Option<TransactionMetadata>,
+
+            const IDB_VERSION_INDEX: &str = "version";
+            const IDB_TIMESTAMP_INDEX: &str = "timestamp";
+            const IDB_BLOCK_DAA_SCORE_INDEX: &str = "blockDaaScore";
+            const IDB_TRANSACTION_DATA_INDEX: &str = "data";
+            const IDB_TRANSACTION_METADATA_INDEX: &str = "metadata";
+
+            store.create_index(IDB_VERSION_INDEX, idb::KeyPath::new_single(IDB_VERSION_INDEX), None).unwrap();
+            store.create_index(IDB_TIMESTAMP_INDEX, idb::KeyPath::new_single(IDB_TIMESTAMP_INDEX), None).unwrap();
+            store.create_index(IDB_BLOCK_DAA_SCORE_INDEX, idb::KeyPath::new_single(IDB_BLOCK_DAA_SCORE_INDEX), None).unwrap();
+            store.create_index(IDB_TRANSACTION_DATA_INDEX, idb::KeyPath::new_single(IDB_TRANSACTION_DATA_INDEX), None).unwrap();
+            store
+                .create_index(IDB_TRANSACTION_METADATA_INDEX, idb::KeyPath::new_single(IDB_TRANSACTION_METADATA_INDEX), None)
+                .unwrap();
+        });
+
+        // `await` open request
+        let db = open_request.await.map_err(|err| Error::Custom(format!("Error opening database: {}", err)))?;
+        todo!()
+        //
+        // Ok(db)
+    }
 }
 
 #[async_trait]
@@ -75,7 +132,9 @@ impl TransactionRecordStore for TransactionStore {
     //     Ok(Box::pin(TransactionRecordStream::try_new(&self.transactions, binding, network_id).await?))
     // }
 
-    async fn load_single(&self, _binding: &Binding, _network_id: &NetworkId, _id: &TransactionId) -> Result<Arc<TransactionRecord>> {
+    async fn load_single(&self, binding: &Binding, network_id: &NetworkId, _id: &TransactionId) -> Result<Arc<TransactionRecord>> {
+        let db = self.init_or_get_db(binding, network_id).await?;
+
         Err(Error::NotImplemented)
     }
 
