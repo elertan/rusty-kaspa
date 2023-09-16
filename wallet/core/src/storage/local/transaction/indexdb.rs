@@ -4,8 +4,16 @@ use crate::storage::interface::StorageStream;
 use crate::storage::{Binding, TransactionRecordStore};
 use crate::storage::{TransactionMetadata, TransactionRecord};
 
+const IDB_ID_INDEX: &str = "id";
+const IDB_VERSION_INDEX: &str = "version";
+const IDB_TIMESTAMP_INDEX: &str = "timestamp";
+const IDB_BLOCK_DAA_SCORE_INDEX: &str = "blockDaaScore";
+const IDB_TRANSACTION_DATA_INDEX: &str = "data";
+const IDB_TRANSACTION_METADATA_INDEX: &str = "metadata";
+
 pub struct Inner {
     known_databases: HashMap<String, HashSet<String>>,
+    databases: HashMap<String, Mutex<idb::Database>>,
 }
 
 pub struct TransactionStore {
@@ -15,7 +23,10 @@ pub struct TransactionStore {
 
 impl TransactionStore {
     pub fn new(name: &str) -> TransactionStore {
-        TransactionStore { inner: Arc::new(Mutex::new(Inner { known_databases: HashMap::default() })), name: name.to_string() }
+        TransactionStore {
+            inner: Arc::new(Mutex::new(Inner { known_databases: HashMap::default(), databases: HashMap::default() })),
+            name: name.to_string(),
+        }
     }
 
     #[inline(always)]
@@ -64,61 +75,61 @@ impl TransactionStore {
         Ok(())
     }
 
-    async fn init_or_get_db(&self, binding: &Binding, network_id: &NetworkId) -> Result<idb::Database> {
+    async fn init_or_get_db(&self, binding: &Binding, network_id: &NetworkId) -> Result<MutexGuard<idb::Database>> {
+        let db_name = self.make_db_name(binding, network_id);
+        {
+            let inner = &mut self.inner();
+
+            if let Some(db_mutex) = inner.databases.get_mut(&db_name) {
+                let db = db_mutex.lock().unwrap();
+                return Ok(db);
+            }
+        }
+
         // Get a factory instance from global scope
         let factory = idb::Factory::new().map_err(|err| format!("Error creating indexed db factory: {}", err))?;
 
-        let db_name = self.make_db_name(binding, network_id);
-
         // Create an open request for the database
-        let mut open_request = factory.open(&db_name, Some(1)).unwrap();
+        let (tx, rx) = oneshot();
+        dispatch(async move {
+            let mut open_request = factory.open(&db_name, Some(1)).unwrap();
 
-        // Add an upgrade handler for database
-        open_request.on_upgrade_needed(|event| {
-            // Get database instance from event
-            let database = event.database().unwrap();
+            // Add an upgrade handler for database
+            open_request.on_upgrade_needed(|event| {
+                // Get database instance from event
+                let database = event.database().unwrap();
 
-            // Prepare object store params
-            let mut store_params = idb::ObjectStoreParams::new();
-            store_params.key_path(Some(idb::KeyPath::new_single("id")));
+                // Prepare object store params
+                let mut store_params = idb::ObjectStoreParams::new();
+                store_params.key_path(Some(idb::KeyPath::new_single(IDB_ID_INDEX)));
 
-            // Create object store
-            let store = database.create_object_store("transactions", store_params).unwrap();
+                // Create object store
+                let store = database.create_object_store("transactions", store_params).unwrap();
 
-            // version: u16,
-            // id: TransactionId,
-            // #[serde(skip_serializing_if = "Option::is_none")]
-            // unixtime: Option<u64>,
-            // binding: Binding,
-            // #[serde(rename = "blockDaaScore")]
-            // block_daa_score: u64,
-            // #[serde(rename = "network")]
-            // network_id: NetworkId,
-            // #[serde(rename = "data")]
-            // transaction_data: TransactionData,
-            // #[serde(skip_serializing_if = "Option::is_none")]
-            // metadata: Option<TransactionMetadata>,
+                store.create_index(IDB_VERSION_INDEX, idb::KeyPath::new_single(IDB_VERSION_INDEX), None).unwrap();
+                store.create_index(IDB_TIMESTAMP_INDEX, idb::KeyPath::new_single(IDB_TIMESTAMP_INDEX), None).unwrap();
+                store.create_index(IDB_BLOCK_DAA_SCORE_INDEX, idb::KeyPath::new_single(IDB_BLOCK_DAA_SCORE_INDEX), None).unwrap();
+                store.create_index(IDB_TRANSACTION_DATA_INDEX, idb::KeyPath::new_single(IDB_TRANSACTION_DATA_INDEX), None).unwrap();
+                store
+                    .create_index(IDB_TRANSACTION_METADATA_INDEX, idb::KeyPath::new_single(IDB_TRANSACTION_METADATA_INDEX), None)
+                    .unwrap();
+            });
 
-            const IDB_VERSION_INDEX: &str = "version";
-            const IDB_TIMESTAMP_INDEX: &str = "timestamp";
-            const IDB_BLOCK_DAA_SCORE_INDEX: &str = "blockDaaScore";
-            const IDB_TRANSACTION_DATA_INDEX: &str = "data";
-            const IDB_TRANSACTION_METADATA_INDEX: &str = "metadata";
-
-            store.create_index(IDB_VERSION_INDEX, idb::KeyPath::new_single(IDB_VERSION_INDEX), None).unwrap();
-            store.create_index(IDB_TIMESTAMP_INDEX, idb::KeyPath::new_single(IDB_TIMESTAMP_INDEX), None).unwrap();
-            store.create_index(IDB_BLOCK_DAA_SCORE_INDEX, idb::KeyPath::new_single(IDB_BLOCK_DAA_SCORE_INDEX), None).unwrap();
-            store.create_index(IDB_TRANSACTION_DATA_INDEX, idb::KeyPath::new_single(IDB_TRANSACTION_DATA_INDEX), None).unwrap();
-            store
-                .create_index(IDB_TRANSACTION_METADATA_INDEX, idb::KeyPath::new_single(IDB_TRANSACTION_METADATA_INDEX), None)
-                .unwrap();
+            let db_result = open_request.await;
+            tx.send(db_result).await.expect("Error sending database result oneshot channel");
         });
+        let db = rx
+            .recv()
+            .await
+            .map_err(|err| Error::Custom(format!("Error opening database recv error oneshot channel: {}", err)))?
+            .map_err(|err| Error::Custom(format!("Error opening database: {}", err)))?;
 
-        // `await` open request
-        let db = open_request.await.map_err(|err| Error::Custom(format!("Error opening database: {}", err)))?;
-        todo!()
-        //
-        // Ok(db)
+        let inner = &mut self.inner();
+        inner.databases.insert(db_name, Mutex::new(db));
+
+        let db_mutex = inner.databases.get(&db_name).expect("Error getting database from inner databases hashmap");
+        let db = db_mutex.lock().unwrap();
+        Ok(db)
     }
 }
 
